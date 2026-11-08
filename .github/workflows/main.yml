@@ -161,11 +161,21 @@ jobs:
           # 兼容补丁 3：cpu_spoof.c 依赖 5.6+ 的 vdso/datapage.h 等 vDSO 内部接口，
           # 4.4 无对应实现；该功能是可选的反检测扩展，置 0 后上游自带的
           # "subsystem missing" 降级路径生效（调用返回 -ENXIO，无害）。
+          # 注意行尾挂着 || defined(__aarch64__)，必须整行替换而不是只换前半。
           CS="$(readlink -f drivers/kernelsu/extension/cpu_spoof.c)"
           test -f "$CS" || { echo "cpu_spoof.c 未找到"; exit 1; }
-          sed -i 's/#if defined(CONFIG_ARM64)/#if 0/g' "$CS"
+          sed -i '/^#if defined(CONFIG_ARM64)/c\#if 0' "$CS"
           echo "已禁用 cpu_spoof ARM64 专属代码: $CS"
           grep -n '#if 0' "$CS" | head -n 5
+          # 兼容补丁 4：上游 Makefile 用 DEFINE_STATIC_KEY_TRUE 探测新式 static key
+          # API，但代码实际使用 DECLARE_STATIC_KEY_FALSE（4.6 才有）——探测与使用
+          # 不一致，4.4 上探测命中却编不过，且以 -D 注入绕过 kernel_compat.h 的
+          # 版本下限。把探测串改成实际使用的 API 名，4.4 上探测失败即走 fallback。
+          MKF="$(readlink -f drivers/kernelsu/Makefile)"
+          test -f "$MKF" || { echo "kernelsu Makefile 未找到"; exit 1; }
+          sed -i 's/DEFINE_STATIC_KEY_TRUE/DECLARE_STATIC_KEY_FALSE/g' "$MKF"
+          echo "已修正 Makefile static key 探测: $MKF"
+          grep -n 'DECLARE_STATIC_KEY_FALSE' "$MKF" | head -n 3
 
       - name: 打手动集成 hook 补丁（ksu_hooks_patch.py）
         run: |
