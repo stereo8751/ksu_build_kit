@@ -149,6 +149,23 @@ jobs:
           sed -i 's|^#include <linux/static_call.h>$|#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)\n#include <linux/static_call.h>\n#endif|' "$INC"
           echo "已修补: $INC"
           grep -n -A1 -B1 'static_call' "$INC" | head -n 5
+          # 兼容补丁 2：上游 kernel_compat.h 把 static key API 的版本下限写成 4.3，
+          # 但 DECLARE_STATIC_KEY_FALSE 是 4.5+/4.6 才进内核的；4.4 上选错分支导致
+          # "a parameter list without types"。把下限抬到 4.6，4.4 走上游维护的
+          # fallback 分支（bool + WRITE_ONCE，功能等价）。
+          COMPAT="$(readlink -f drivers/kernelsu/kernel_compat.h)"
+          test -f "$COMPAT" || { echo "kernel_compat.h 未找到"; exit 1; }
+          sed -i 's/KERNEL_VERSION(4, 3, 0)/KERNEL_VERSION(4, 6, 0)/' "$COMPAT"
+          echo "已修补 static key 版本下限: $COMPAT"
+          grep -n 'KERNEL_VERSION(4, 6, 0)' "$COMPAT" | head -n 3
+          # 兼容补丁 3：cpu_spoof.c 依赖 5.6+ 的 vdso/datapage.h 等 vDSO 内部接口，
+          # 4.4 无对应实现；该功能是可选的反检测扩展，置 0 后上游自带的
+          # "subsystem missing" 降级路径生效（调用返回 -ENXIO，无害）。
+          CS="$(readlink -f drivers/kernelsu/extension/cpu_spoof.c)"
+          test -f "$CS" || { echo "cpu_spoof.c 未找到"; exit 1; }
+          sed -i 's/#if defined(CONFIG_ARM64)/#if 0/g' "$CS"
+          echo "已禁用 cpu_spoof ARM64 专属代码: $CS"
+          grep -n '#if 0' "$CS" | head -n 5
 
       - name: 打手动集成 hook 补丁（ksu_hooks_patch.py）
         run: |
