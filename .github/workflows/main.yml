@@ -1,0 +1,182 @@
+# =====================================================================
+# 小米6 (sagit / msm8998 / 4.4.253-perf 非 GKI) 带 KSU 内核云编译
+#
+# 用法：把本套件整体推送为你自己的 GitHub 仓库（README.md、repack_boot.py、
+#       ksu_hooks_patch.py、local_build.sh 放仓库根目录，.github/workflows/ 随之生效），
+#       然后在 Actions 页面手动触发（workflow_dispatch），或直接 push 到 main 分支。
+#
+# 两种 KSU 集成方式（ksu_type 参数）：
+#   sukisu-builtin  SukiSU-Ultra builtin 分支（默认，推荐）：
+#                   无 kprobe 依赖，专供手动集成，Kconfig 的 CONFIG_KSU 无 depends。
+#   tiann-0.9.5     tiann/KernelSU v0.9.5（非 GKI 官方最后支持版，回退方案）。
+#
+# 所有 hook 补丁由 ksu_hooks_patch.py 完成，签名均核对自官方文档与 builtin 分支源码。
+# =====================================================================
+
+name: build-sagit-kernel-ksu
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_repo:
+        description: '内核源码仓库（owner/repo）'
+        required: false
+        default: 'MiCode/Xiaomi_Kernel_OpenSource'
+      kernel_branch:
+        description: '内核源码分支'
+        required: false
+        default: 'sagit-p-oss'
+      kernel_defconfig:
+        description: 'defconfig（arch/arm64/configs/ 下的文件名）'
+        required: false
+        default: 'sagit_user_defconfig'
+      dtb_name:
+        description: 'DTB 文件名（out/arch/arm64/boot/dts/qcom/ 下）'
+        required: false
+        default: 'sagit-msm8998-v2.1-mtp.dtb'
+      ksu_type:
+        description: 'KSU 集成方式'
+        required: false
+        default: 'sukisu-builtin'
+        type: choice
+        options:
+          - sukisu-builtin
+          - tiann-0.9.5
+      boot_img_url:
+        description: '可选：原 boot.img 直链（提供则自动重打包出可直接刷写的 boot_ksu.img）'
+        required: false
+        default: ''
+  push:
+    branches: [ main, master ]
+
+env:
+  # push 触发时取默认值，dispatch 触发时取输入值（|| 兜底写法）
+  KERNEL_REPO: ${{ github.event.inputs.kernel_repo || 'MiCode/Xiaomi_Kernel_OpenSource' }}
+  KERNEL_BRANCH: ${{ github.event.inputs.kernel_branch || 'sagit-p-oss' }}
+  DEFCONFIG: ${{ github.event.inputs.kernel_defconfig || 'sagit_user_defconfig' }}
+  DTB_NAME: ${{ github.event.inputs.dtb_name || 'sagit-msm8998-v2.1-mtp.dtb' }}
+  KSU_TYPE: ${{ github.event.inputs.ksu_type || 'sukisu-builtin' }}
+  BOOT_IMG_URL: ${{ github.event.inputs.boot_img_url || '' }}
+  # proton clang：20210522 release = clang 13.0.0 + binutils 2.36.1，
+  # 与现役内核（4.4.253-perf-g337fdc9b0a58，proton clang 13.0.0 编译）工具链一致
+  TOOLCHAIN_URL: 'https://github.com/kdrag0n/proton-clang'
+  TOOLCHAIN_TAG: '20210522'
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: 拉取本套件（repack_boot.py / ksu_hooks_patch.py）
+        uses: actions/checkout@v4
+
+      - name: 安装编译依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential bc bison flex libssl-dev libncurses5-dev \
+            python3 python3-dev cpio zip curl wget git
+
+      - name: 拉取内核源码（${{ env.KERNEL_REPO }} @ ${{ env.KERNEL_BRANCH }}）
+        run: |
+          git clone --depth=1 -b "${KERNEL_BRANCH}" \
+            "https://github.com/${KERNEL_REPO}" kernel_src
+          cd kernel_src
+          echo "--- 确认关键源文件存在 ---"
+          test -f "arch/arm64/configs/${DEFCONFIG}" || { echo "defconfig 不存在：${DEFCONFIG}"; exit 1; }
+          test -f fs/exec.c && test -f fs/open.c && test -f fs/stat.c
+
+      - name: 拉取 proton clang 工具链（tag ${{ env.TOOLCHAIN_TAG }}）
+        run: |
+          git clone --depth=1 -b "${TOOLCHAIN_TAG}" "${TOOLCHAIN_URL}" proton-clang
+          ./proton-clang/bin/clang --version | head -n 2
+
+      - name: 集成 KSU 源码（setup.sh -> drivers/kernelsu）
+        run: |
+          cd kernel_src
+          if [ "${KSU_TYPE}" = "tiann-0.9.5" ]; then
+            # tiann/KernelSU：非 GKI 最后官方支持版是 v0.9.5（v1.0 起放弃非 GKI）
+            curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" \
+              | bash -s v0.9.5
+          else
+            # SukiSU-Ultra builtin 分支：无 kprobe 的手动钩子设计（本套件默认）
+            curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" \
+              | bash -s builtin
+          fi
+          test -d drivers/kernelsu || { echo "drivers/kernelsu 未创建，setup.sh 失败"; exit 1; }
+
+      - name: 打手动集成 hook 补丁（ksu_hooks_patch.py）
+        run: |
+          python3 ksu_hooks_patch.py --mode "${KSU_TYPE}" --src kernel_src
+
+      - name: 向 defconfig 追加 KSU CONFIG
+        run: |
+          cd kernel_src
+          DEF="arch/arm64/configs/${DEFCONFIG}"
+          cp "$DEF" "${DEF}.bak"
+          grep -q '^CONFIG_KSU=y' "$DEF" || printf '\n# ==== KernelSU（CI 追加，手动集成无 kprobe） ====\nCONFIG_KSU=y\n' >> "$DEF"
+          if [ "${KSU_TYPE}" = "sukisu-builtin" ]; then
+            # 仅 SukiSU builtin 的 Kconfig 里存在该符号；tiann 版追加会被忽略，故按模式区分
+            grep -q '^CONFIG_KSU_FEATURE_ADBROOT=y' "$DEF" || printf 'CONFIG_KSU_FEATURE_ADBROOT=y\n' >> "$DEF"
+          fi
+          tail -n 6 "$DEF"
+
+      - name: defconfig + 编译 Image.gz 与 dtbs
+        run: |
+          cd kernel_src
+          export PATH="$GITHUB_WORKSPACE/proton-clang/bin:$PATH"
+          # CC=clang 由命令行传入：sagit-p-oss 顶层 Makefile 默认 CC=scripts/gcc-wrapper.py
+          # （python2），命令行覆盖既绕过 wrapper 又直接启用 proton clang，
+          # 这正是现役内核的构建方式（内核版本串含 "proton clang 13.0.0"）
+          MAKE="make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-"
+          $MAKE "${DEFCONFIG}"
+          # 确认 CONFIG_KSU 真的生效（防止 kconfig 依赖把 KSU 静默丢掉）
+          grep -q '^CONFIG_KSU=y' out/.config || { echo "CONFIG_KSU 未生效！检查 out/.config"; exit 1; }
+          $MAKE -j"$(nproc)" Image.gz dtbs 2>&1 | tail -n 40
+          echo "--- 编译产物 ---"
+          ls -l out/arch/arm64/boot/Image.gz
+          test -f "out/arch/arm64/boot/dts/qcom/${DTB_NAME}" \
+            || { echo "DTB 未生成：out/arch/arm64/boot/dts/qcom/${DTB_NAME}"; exit 1; }
+
+      - name: 拼接 Image.gz-dtb（sagit 无 dtbo，内核为 gzip 流 + 单 DTB 拼接）
+        run: |
+          cd kernel_src
+          cat out/arch/arm64/boot/Image.gz \
+              "out/arch/arm64/boot/dts/qcom/${DTB_NAME}" \
+              > out/Image.gz-dtb
+          ls -l out/Image.gz-dtb
+          # 校验：必须以 gzip 魔数 1f 8b 开头（与原厂 Image.gz-dtb 结构一致）
+          head -c 2 out/Image.gz-dtb | od -A n -t x1 | grep -q "1f 8b" \
+            || { echo "Image.gz-dtb 开头不是 gzip 魔数"; exit 1; }
+
+      - name: 重打包 boot.img（可选，需提供 boot_img_url）
+        if: ${{ env.BOOT_IMG_URL != '' }}
+        run: |
+          curl -fL --retry 3 -o base_boot.img "${BOOT_IMG_URL}"
+          python3 repack_boot.py \
+            --kernel kernel_src/out/Image.gz-dtb \
+            --base base_boot.img \
+            --out boot_ksu.img
+
+      - name: 汇总产物
+        run: |
+          mkdir -p artifacts
+          cp kernel_src/out/Image.gz-dtb artifacts/
+          cp kernel_src/out/.config artifacts/kernel_config_ksu.txt
+          # 原样保留原 defconfig 备份，便于核对 CI 追加项
+          cp "kernel_src/arch/arm64/configs/${DEFCONFIG}.bak" artifacts/defconfig.orig 2>/dev/null || true
+          if [ -f boot_ksu.img ]; then cp boot_ksu.img artifacts/; fi
+          {
+            echo "kernel: ${KERNEL_REPO}@${KERNEL_BRANCH}"
+            echo "defconfig: ${DEFCONFIG}"
+            echo "dtb: ${DTB_NAME}"
+            echo "ksu_type: ${KSU_TYPE}"
+            echo "date: $(date -u)"
+          } > artifacts/BUILD_INFO.txt
+          ls -l artifacts
+
+      - name: 上传编译产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: sagit-ksu-kernel-${{ github.run_number }}
+          path: artifacts/
+          if-no-files-found: error
