@@ -142,9 +142,13 @@ jobs:
           # 4.4 兼容补丁：上游 kernel_includes.h 无条件 include linux/static_call.h，
           # 该头文件 5.10 才存在；全库检索确认代码无任何 static_call 调用，属死引入，
           # 用版本保护包起来（5.10+ 内核仍可用）。
-          sed -i 's|^#include <linux/static_call.h>$|#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)\n#include <linux/static_call.h>\n#endif|' \
-            kernel/kernel_includes.h
-          grep -n -A1 -B1 'static_call' kernel/kernel_includes.h | head -n 5
+          # 注意：drivers/kernelsu 是指向 KernelSU/kernel 的符号链接，
+          # 必须解析真实路径再 sed -i（直接对符号链接 -i 会把链接替换成普通文件）。
+          INC="$(readlink -f drivers/kernelsu/kernel_includes.h)"
+          test -f "$INC" || { echo "kernel_includes.h 未找到（实际路径解析失败）：$INC"; ls -l drivers/kernelsu/ | head; exit 1; }
+          sed -i 's|^#include <linux/static_call.h>$|#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)\n#include <linux/static_call.h>\n#endif|' "$INC"
+          echo "已修补: $INC"
+          grep -n -A1 -B1 'static_call' "$INC" | head -n 5
 
       - name: 打手动集成 hook 补丁（ksu_hooks_patch.py）
         run: |
