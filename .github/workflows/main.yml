@@ -108,6 +108,18 @@ jobs:
           done
           grep -n 'yylloc' scripts/dtc/dtc-lexer.lex.c_shipped | head -n 3
 
+      - name: 摘除厂商驱动的 -Werror（clang 13 严格告警拦截）
+        run: |
+          cd kernel_src
+          # tfa98xx（-Wself-assign/-Wenum-conversion）和 elliptic（-Wsometimes-uninitialized）
+          # 的 Makefile 写死 -Werror，clang 13 下纯告警也会断编译。统一处理：
+          # -Werror=xxx -> -Wno-error=xxx；裸 -Werror 删除。警告保留可见，不再拦路。
+          grep -rIl --include='Makefile' --include='Kbuild' --include='*.mak' -- '-Werror' . | while read -r f; do
+            sed -i -e 's/-Werror=\([a-zA-Z0-9_-]*\)/-Wno-error=\1/g' -e 's/-Werror//g' "$f"
+            echo "cleaned: $f"
+          done
+          echo "剩余 -Werror: $(grep -rI --include='Makefile' --include='Kbuild' --include='*.mak' -- '-Werror' . | wc -l)"
+
       - name: 集成 KSU 源码（setup.sh -> drivers/kernelsu）
         run: |
           cd kernel_src
