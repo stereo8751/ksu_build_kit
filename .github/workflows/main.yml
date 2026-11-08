@@ -139,6 +139,12 @@ jobs:
               | bash -s builtin
           fi
           test -d drivers/kernelsu || { echo "drivers/kernelsu 未创建，setup.sh 失败"; exit 1; }
+          # 4.4 兼容补丁：上游 kernel_includes.h 无条件 include linux/static_call.h，
+          # 该头文件 5.10 才存在；全库检索确认代码无任何 static_call 调用，属死引入，
+          # 用版本保护包起来（5.10+ 内核仍可用）。
+          sed -i 's|^#include <linux/static_call.h>$|#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)\n#include <linux/static_call.h>\n#endif|' \
+            kernel/kernel_includes.h
+          grep -n -A1 -B1 'static_call' kernel/kernel_includes.h | head -n 5
 
       - name: 打手动集成 hook 补丁（ksu_hooks_patch.py）
         run: |
