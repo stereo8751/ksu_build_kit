@@ -197,8 +197,11 @@ jobs:
             '    return -EOPNOTSUPP;' \
             '}' > "$KPMDIR/kpm.c"
           printf '%s\n' '/* 4.4 兼容 stub：KPM 已禁用 */' > "$KPMDIR/compact.c"
+          # super_access.c 同样依赖 set_memory.h(kpm 家族第三个文件)，
+          # 且其导出符号在 stub 后无任何外部引用，直接置空。
+          printf '%s\n' '/* 4.4 兼容 stub：KPM 已禁用 */' > "$KPMDIR/super_access.c"
           echo "已将 KPM 替换为 4.4 stub"
-          cat "$KPMDIR/kpm.c"
+          ls -la "$KPMDIR"
 
       - name: 打手动集成 hook 补丁（ksu_hooks_patch.py）
         run: |
