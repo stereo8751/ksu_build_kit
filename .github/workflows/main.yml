@@ -164,6 +164,11 @@ jobs:
             # 仅 SukiSU builtin 的 Kconfig 里存在该符号；tiann 版追加会被忽略，故按模式区分
             grep -q '^CONFIG_KSU_FEATURE_ADBROOT=y' "$DEF" || printf 'CONFIG_KSU_FEATURE_ADBROOT=y\n' >> "$DEF"
           fi
+          # 显式关闭 SUSFS：上游 Kconfig 里 KSU_SUSFS default y 且 depends on
+          # THREAD_INFO_IN_TASK——4.4 内核根本没有这个符号，Kconfig 对不存在的
+          # 依赖按满足处理，SUSFS 会被默认打开并 include 不存在的 linux/susfs.h。
+          # 必须用规范写法显式置否（sub-option 全部随之关闭）。
+          grep -q 'CONFIG_KSU_SUSFS' "$DEF" || printf '# CONFIG_KSU_SUSFS is not set\n' >> "$DEF"
           # 关闭模块签名：Android ROM 不加载签名 .ko，而 4.4 的 sign-file/extract-cert
           # 宿主工具在 OpenSSL 3（Ubuntu 22.04）下编译/链接脆弱，是 scripts 阶段暴雷重灾区
           if grep -q '^CONFIG_MODULE_SIG=y' "$DEF"; then
@@ -183,6 +188,9 @@ jobs:
           $MAKE "${DEFCONFIG}"
           # 确认 CONFIG_KSU 真的生效（防止 kconfig 依赖把 KSU 静默丢掉）
           grep -q '^CONFIG_KSU=y' out/.config || { echo "CONFIG_KSU 未生效！检查 out/.config"; exit 1; }
+          # 防线：SUSFS 未集成内核补丁，绝不能开（详见 defconfig 步骤注释）
+          grep -q '^CONFIG_KSU_SUSFS=y' out/.config && { echo "CONFIG_KSU_SUSFS 意外开启！4.4 无 susfs.h"; exit 1; }
+          echo "CONFIG_KSU=$(grep -c '^CONFIG_KSU=y' out/.config) SUSFS=$(grep -c '^CONFIG_KSU_SUSFS=y' out/.config || true)"
           # 完整保留日志（旧内核并行编译时真正报错常被 tail 截掉，失败时靠 build.log 定位）
           set -o pipefail
           $MAKE -j"$(nproc)" Image.gz dtbs 2>&1 | tee build.log
