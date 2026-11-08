@@ -115,10 +115,16 @@ jobs:
           # 的 Makefile 写死 -Werror，clang 13 下纯告警也会断编译。统一处理：
           # -Werror=xxx -> -Wno-error=xxx；裸 -Werror 删除。警告保留可见，不再拦路。
           grep -rIl --include='Makefile' --include='Kbuild' --include='*.mak' -- '-Werror' . | while read -r f; do
-            sed -i -e 's/-Werror=\([a-zA-Z0-9_-]*\)/-Wno-error=\1/g' -e 's/-Werror//g' "$f"
+            # 三种形态都要处理：-Werror=xxx / -Werror-xxx / 裸 -Werror
+            # （上一轮漏了连字符形态，导致 -Werror-implicit-function-declaration 变成非法参数）
+            sed -i \
+              -e 's/-Werror=\([a-zA-Z0-9_-]*\)/-Wno-error=\1/g' \
+              -e 's/-Werror-\([a-zA-Z0-9_-]*\)/-Wno-error=\1/g' \
+              -e 's/-Werror//g' "$f"
             echo "cleaned: $f"
           done
           echo "剩余 -Werror: $(grep -rI --include='Makefile' --include='Kbuild' --include='*.mak' -- '-Werror' . | wc -l)"
+          echo "残留非法参数检查: $(grep -rI --include='Makefile' --include='Kbuild' -- ' -[a-z]*-implicit' . | head -n 3)"
 
       - name: 集成 KSU 源码（setup.sh -> drivers/kernelsu）
         run: |
