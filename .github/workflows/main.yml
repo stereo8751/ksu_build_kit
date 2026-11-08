@@ -91,6 +91,23 @@ jobs:
           git clone --depth=1 -b "${TOOLCHAIN_TAG}" "${TOOLCHAIN_URL}" proton-clang
           ./proton-clang/bin/clang --version | head -n 2
 
+      - name: 修复 4.4 dtc 在新宿主 gcc（-fno-common）下的 yylloc 重定义
+        run: |
+          cd kernel_src
+          # Ubuntu 22.04 宿主 gcc 默认 -fno-common，4.4 自带 dtc 的
+          # dtc-lexer 与 dtc-parser 重复定义 yylloc，链接报 multiple definition。
+          # 标准修法：改成 extern 声明（与上游 dtc 修复提交一致）。
+          # 注意构建实际使用 SHIPPED 预生成文件，两处都要打。
+          for f in scripts/dtc/dtc-lexer.l scripts/dtc/dtc-lexer.lex.c_shipped; do
+            if [ -f "$f" ] && grep -q '^YYLTYPE yylloc;' "$f"; then
+              sed -i 's/^YYLTYPE yylloc;/extern YYLTYPE yylloc;/' "$f"
+              echo "patched: $f"
+            else
+              echo "skip (未匹配，可能已修): $f"
+            fi
+          done
+          grep -n 'yylloc' scripts/dtc/dtc-lexer.lex.c_shipped | head -n 3
+
       - name: 集成 KSU 源码（setup.sh -> drivers/kernelsu）
         run: |
           cd kernel_src
