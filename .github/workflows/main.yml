@@ -74,6 +74,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             build-essential bc bison flex libssl-dev libncurses5-dev \
+            pkg-config libelf-dev \
             python3 python3-dev cpio zip curl wget git
 
       - name: 拉取内核源码（${{ env.KERNEL_REPO }} @ ${{ env.KERNEL_BRANCH }}）
@@ -118,7 +119,13 @@ jobs:
             # 仅 SukiSU builtin 的 Kconfig 里存在该符号；tiann 版追加会被忽略，故按模式区分
             grep -q '^CONFIG_KSU_FEATURE_ADBROOT=y' "$DEF" || printf 'CONFIG_KSU_FEATURE_ADBROOT=y\n' >> "$DEF"
           fi
-          tail -n 6 "$DEF"
+          # 关闭模块签名：Android ROM 不加载签名 .ko，而 4.4 的 sign-file/extract-cert
+          # 宿主工具在 OpenSSL 3（Ubuntu 22.04）下编译/链接脆弱，是 scripts 阶段暴雷重灾区
+          if grep -q '^CONFIG_MODULE_SIG=y' "$DEF"; then
+            sed -i 's/^CONFIG_MODULE_SIG=y/CONFIG_MODULE_SIG=n/' "$DEF"
+          fi
+          grep -q '^CONFIG_MODULE_SIG=n' "$DEF" || printf 'CONFIG_MODULE_SIG=n\n' >> "$DEF"
+          tail -n 8 "$DEF"
 
       - name: defconfig + 编译 Image.gz 与 dtbs
         run: |
@@ -131,11 +138,21 @@ jobs:
           $MAKE "${DEFCONFIG}"
           # 确认 CONFIG_KSU 真的生效（防止 kconfig 依赖把 KSU 静默丢掉）
           grep -q '^CONFIG_KSU=y' out/.config || { echo "CONFIG_KSU 未生效！检查 out/.config"; exit 1; }
-          $MAKE -j"$(nproc)" Image.gz dtbs 2>&1 | tail -n 40
+          # 完整保留日志（旧内核并行编译时真正报错常被 tail 截掉，失败时靠 build.log 定位）
+          set -o pipefail
+          $MAKE -j"$(nproc)" Image.gz dtbs 2>&1 | tee build.log
           echo "--- 编译产物 ---"
           ls -l out/arch/arm64/boot/Image.gz
           test -f "out/arch/arm64/boot/dts/qcom/${DTB_NAME}" \
             || { echo "DTB 未生成：out/arch/arm64/boot/dts/qcom/${DTB_NAME}"; exit 1; }
+
+      - name: 失败时上传完整编译日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ github.run_number }}
+          path: kernel_src/build.log
+          if-no-files-found: ignore
 
       - name: 拼接 Image.gz-dtb（sagit 无 dtbo，内核为 gzip 流 + 单 DTB 拼接）
         run: |
