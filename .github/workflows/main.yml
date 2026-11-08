@@ -176,6 +176,29 @@ jobs:
           sed -i 's/DEFINE_STATIC_KEY_TRUE/DECLARE_STATIC_KEY_FALSE/g' "$MKF"
           echo "已修正 Makefile static key 探测: $MKF"
           grep -n 'DECLARE_STATIC_KEY_FALSE' "$MKF" | head -n 3
+          # 兼容补丁 5：KPM（内核补丁模块加载器）依赖 4.13+ 的 linux/set_memory.h、
+          # 新签名 access_ok、__nocfi 属性，4.4 上无法低成本适配；glue 层对
+          # probe 失败有优雅降级（报"KPM 不可用"），用 stub 替换即可整体禁用。
+          KPMDIR="$(readlink -f drivers/kernelsu/extension/kpm)"
+          test -d "$KPMDIR" || { echo "kpm 目录未找到"; exit 1; }
+          printf '%s\n' \
+            '/* 4.4 兼容 stub：KPM 依赖 set_memory.h(4.13+)/新 access_ok/__nocfi，已禁用 */' \
+            '#include <linux/errno.h>' \
+            '#include <linux/types.h>' \
+            'long sukisu_kpm_bridge(unsigned long op, unsigned long a1, unsigned long a2,' \
+            '                       unsigned long a3, unsigned long a4)' \
+            '{' \
+            '    (void)op; (void)a1; (void)a2; (void)a3; (void)a4;' \
+            '    return -EOPNOTSUPP;' \
+            '}' \
+            'int do_kpm(void __user *arg)' \
+            '{' \
+            '    (void)arg;' \
+            '    return -EOPNOTSUPP;' \
+            '}' > "$KPMDIR/kpm.c"
+          printf '%s\n' '/* 4.4 兼容 stub：KPM 已禁用 */' > "$KPMDIR/compact.c"
+          echo "已将 KPM 替换为 4.4 stub"
+          cat "$KPMDIR/kpm.c"
 
       - name: 打手动集成 hook 补丁（ksu_hooks_patch.py）
         run: |
